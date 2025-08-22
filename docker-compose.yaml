@@ -1,0 +1,298 @@
+services:
+  # Unified MongoDB instance for all services
+  mongo:
+    image: mongo:7.0
+    container_name: unified-mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=unified_db
+    
+    command: mongod --quiet --logpath /dev/null
+    logging:
+      driver: "none"
+    volumes:
+      - unified_mongo_data:/data/db
+    networks:
+      - unified-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Browser Use Backend API
+  browser-use-api:
+    build:
+      context: ./browser-use-backend
+    container_name: browser-use-api
+    env_file: ./browser-use-backend/.env
+    volumes:
+      - ./browser-use-backend/app/extensions/capsolver:/app/extensions/capsolver
+      - shared_tmp_files:/app/tmp
+    ports:
+      - "8000:8000"
+      - "5901-5999:5901-5999"
+      - "6081-6199:6081-6199"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/browser_use_db
+      - PLANNER_BACKEND_URL=http://planner-backend:8001
+      - PLANNER_AGENT_URL=http://planner-agent:8002
+      - N8N_URL=http://n8n:5678
+    networks:
+      - unified-network
+
+  # Frontend Dashboard
+  frontend-dashboard:
+    build:
+      context: ./frontend-dashboard
+      dockerfile: Dockerfile
+    container_name: frontend-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=mongodb://mongo:27017/medical_assistant
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_SECRET=your-secret-key-here
+      # Browser-accessible URLs (for client-side requests)
+      - NEXT_PUBLIC_BROWSER_USE_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_PLANNER_BACKEND_URL=http://localhost:8001
+      - NEXT_PUBLIC_PLANNER_AGENT_URL=http://localhost:8002
+      - NEXT_PUBLIC_N8N_URL=http://localhost:5678
+      # Server-side URLs (for server-side requests)
+      - BROWSER_USE_API_URL=http://browser-use-api:8000
+      - PLANNER_BACKEND_URL=http://planner-backend:8001
+      - PLANNER_AGENT_URL=http://planner-agent:8002
+      - N8N_URL=http://n8n:5678
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - unified-network
+    volumes:
+      - ./frontend-dashboard/.env:/app/.env:ro
+
+  # Planner Backend API
+  planner-backend:
+    build:
+      context: ./planner-backend
+      dockerfile: dockerfile
+    container_name: planner-backend
+    volumes:
+      - ./planner-backend:/app
+      - shared_tmp_files:/app/tmp
+    working_dir: /app
+    ports:
+      - "8001:8001"
+    command: python main.py
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MONGO_URI=mongodb://mongo:27017/unified_db
+      - MONGO_DB_NAME=unified_db
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/preauth
+      - BASE_URL=http://planner-backend:8001
+      - DEBUG=True
+      - BROWSER_USE_API_URL=http://browser-use-api:8000
+      - PLANNER_AGENT_URL=http://planner-agent:8002
+      - FRONTEND_URL=http://frontend-dashboard:3000
+    networks:
+      - unified-network
+
+  # Planner Agent API
+  planner-agent:
+    build:
+      context: ./planner-agent
+    container_name: planner-agent
+    env_file: 
+      - ./planner-agent/.env
+    volumes:
+      - ./planner-agent:/app
+      - shared_tmp_files:/app/tmp
+    working_dir: /app
+    ports:
+      - "8002:8002"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MONGO_URI=mongodb://mongo:27017/planner_agent_db
+      - PLANNER_BACKEND_URL=http://planner-backend:8001
+      - BROWSER_USE_API_URL=http://browser-use-api:8000
+      - N8N_URL=http://n8n:5678
+    networks:
+      - unified-network
+
+  # PostgreSQL for N8N
+  postgres:
+    image: postgres:latest
+    container_name: postgres
+    environment:
+      - POSTGRES_DB=${DB_POSTGRESDB_DATABASE:-n8n}
+      - POSTGRES_USER=${DB_POSTGRESDB_USER:-n8n}
+      - POSTGRES_PASSWORD=${DB_POSTGRESDB_PASSWORD:-n8n}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - unified-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_POSTGRESDB_USER:-n8n}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for N8N
+  redis:
+    image: redis:6
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - unified-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # N8N Main Service
+  n8n:
+    image: salonigupta19/n8n-custom:v1
+    container_name: n8n
+    environment:
+      - DB_TYPE=${DB_TYPE:-postgresdb}
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE:-n8n}
+      - DB_POSTGRESDB_USER=${DB_POSTGRESDB_USER:-n8n}
+      - DB_POSTGRESDB_PASSWORD=${DB_POSTGRESDB_PASSWORD:-n8n}
+      - DB_POSTGRESDB_SCHEMA=${DB_POSTGRESDB_SCHEMA:-public}
+      - N8N_SECRET_COOKIE=${N8N_SECRET_COOKIE:-n8n-secret}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-n8n-encryption-key}
+      - N8N_JWT_SECRET=${N8N_JWT_SECRET:-n8n-jwt-secret}
+      - EXECUTIONS_MODE=${EXECUTIONS_MODE:-queue}
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_DB=${QUEUE_BULL_REDIS_DB:-0}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-UTC}
+      - N8N_RUNNERS_ENABLED=${N8N_RUNNERS_ENABLED:-true}
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS:-true}
+      - N8N_WORKERS_CONCURRENCY=${N8N_WORKERS_CONCURRENCY:-10}
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_BASIC_AUTH_ACTIVE:-false}
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-admin123}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-false}
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - unified-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # N8N Worker 1
+  n8n-worker-1:
+    image: salonigupta19/n8n-custom:v1
+    container_name: n8n-worker-1
+    command: ["worker"]
+    environment:
+      - DB_TYPE=${DB_TYPE:-postgresdb}
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE:-n8n}
+      - DB_POSTGRESDB_USER=${DB_POSTGRESDB_USER:-n8n}
+      - DB_POSTGRESDB_PASSWORD=${DB_POSTGRESDB_PASSWORD:-n8n}
+      - DB_POSTGRESDB_SCHEMA=${DB_POSTGRESDB_SCHEMA:-public}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-n8n-encryption-key}
+      - N8N_SECRET_COOKIE=${N8N_SECRET_COOKIE:-n8n-secret}
+      - N8N_JWT_SECRET=${N8N_JWT_SECRET:-n8n-jwt-secret}
+      - EXECUTIONS_MODE=${EXECUTIONS_MODE:-queue}
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_DB=${QUEUE_BULL_REDIS_DB:-0}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-UTC}
+      - N8N_WORKERS_CONCURRENCY=${N8N_WORKERS_CONCURRENCY:-10}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-false}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - unified-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # N8N Worker 2
+  n8n-worker-2:
+    image: salonigupta19/n8n-custom:v1
+    container_name: n8n-worker-2
+    command: ["worker"]
+    environment:
+      - DB_TYPE=${DB_TYPE:-postgresdb}
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE:-n8n}
+      - DB_POSTGRESDB_USER=${DB_POSTGRESDB_USER:-n8n}
+      - DB_POSTGRESDB_PASSWORD=${DB_POSTGRESDB_PASSWORD:-n8n}
+      - DB_POSTGRESDB_SCHEMA=${DB_POSTGRESDB_SCHEMA:-public}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:-n8n-encryption-key}
+      - N8N_SECRET_COOKIE=${N8N_SECRET_COOKIE:-n8n-secret}
+      - N8N_JWT_SECRET=${N8N_JWT_SECRET:-n8n-jwt-secret}
+      - EXECUTIONS_MODE=${EXECUTIONS_MODE:-queue}
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      - QUEUE_BULL_REDIS_DB=${QUEUE_BULL_REDIS_DB:-0}
+      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-UTC}
+      - N8N_WORKERS_CONCURRENCY=${N8N_WORKERS_CONCURRENCY:-10}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS:-false}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - unified-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # MongoDB Admin UI (Optional)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongo
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - unified-network
+
+volumes:
+  unified_mongo_data:
+  postgres_data:
+  n8n_data:
+  shared_tmp_files:
+
+networks:
+  unified-network:
+    driver: bridge

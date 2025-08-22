@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+ECHO is on.
+# env 
+.env
+n8n/.env
+ECHO is on.
+# logs, pids
+*.log
+*.pid
+ECHO is on.
+# OS cruft
+.DS_Store
+Thumbs.db
+ECHO is on.
+# builds / coverage
+dist/
+build/
+.next/
+coverage/
+ECHO is on.
+# python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+ECHO is on.
+# project-specific temp/state
+browser-use-backend/app/tmp/
+browser-use-backend/app/supervisord.pid

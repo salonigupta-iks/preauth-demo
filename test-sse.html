@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSE Connection Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .connecting { background-color: #fff3cd; color: #856404; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .logs { background-color: #f8f9fa; padding: 10px; border: 1px solid #dee2e6; height: 300px; overflow-y: auto; }
+        button { padding: 10px 20px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>SSE Connection Test for Planner Agent</h1>
+    
+    <div id="status" class="status disconnected">Disconnected</div>
+    
+    <div>
+        <button onclick="connectSSE()">Connect</button>
+        <button onclick="disconnectSSE()">Disconnect</button>
+        <button onclick="sendTestMessage()">Send Test Message</button>
+        <button onclick="clearLogs()">Clear Logs</button>
+    </div>
+    
+    <h3>Event Logs:</h3>
+    <div id="logs" class="logs"></div>
+    
+    <script>
+        let eventSource = null;
+        const statusDiv = document.getElementById('status');
+        const logsDiv = document.getElementById('logs');
+        
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            logsDiv.innerHTML += `[${timestamp}] ${message}<br>`;
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+            console.log(message);
+        }
+        
+        function updateStatus(status, className) {
+            statusDiv.textContent = status;
+            statusDiv.className = `status ${className}`;
+        }
+        
+        function connectSSE() {
+            if (eventSource) {
+                log('Already connected or connecting...');
+                return;
+            }
+            
+            updateStatus('Connecting...', 'connecting');
+            log('Attempting to connect to http://localhost:8002/events');
+            
+            try {
+                eventSource = new EventSource('http://localhost:8002/events');
+                
+                eventSource.onopen = function(event) {
+                    updateStatus('Connected', 'connected');
+                    log('✅ SSE connection opened successfully');
+                    log('Event object: ' + JSON.stringify(event, null, 2));
+                };
+                
+                eventSource.onmessage = function(event) {
+                    log('📨 Default message received: ' + event.data);
+                    try {
+                        const data = JSON.parse(event.data);
+                        log('📨 Parsed data: ' + JSON.stringify(data, null, 2));
+                    } catch (e) {
+                        log('⚠️ Failed to parse message as JSON: ' + e.message);
+                    }
+                };
+                
+                eventSource.onerror = function(event) {
+                    updateStatus('Error', 'error');
+                    log('❌ SSE connection error occurred');
+                    log('Error event: ' + JSON.stringify(event, null, 2));
+                    log('ReadyState: ' + eventSource.readyState);
+                    
+                    if (eventSource.readyState === EventSource.CLOSED) {
+                        log('Connection was closed');
+                        eventSource = null;
+                        updateStatus('Disconnected', 'disconnected');
+                    }
+                };
+                
+                // Test listening for a specific user event
+                eventSource.addEventListener('test_user', function(event) {
+                    log('👤 User-specific event received: ' + event.data);
+                });
+                
+            } catch (error) {
+                updateStatus('Error', 'error');
+                log('❌ Failed to create EventSource: ' + error.message);
+                eventSource = null;
+            }
+        }
+        
+        function disconnectSSE() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                updateStatus('Disconnected', 'disconnected');
+                log('🔌 SSE connection closed');
+            }
+        }
+        
+        function sendTestMessage() {
+            log('📤 Sending test message to planner-agent...');
+            
+            fetch('http://localhost:8002/send-message', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message: 'Test message from browser',
+                    type: 'test'
+                })
+            })
+            .then(response => {
+                if (response.ok) {
+                    return response.json();
+                } else {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+            })
+            .then(data => {
+                log('✅ Message sent successfully: ' + JSON.stringify(data, null, 2));
+            })
+            .catch(error => {
+                log('❌ Failed to send message: ' + error.message);
+            });
+        }
+        
+        function clearLogs() {
+            logsDiv.innerHTML = '';
+        }
+        
+        // Test connection on page load
+        log('🔄 Page loaded. Click Connect to test SSE connection.');
+        log('Testing connection to planner-agent at http://localhost:8002');
+    </script>
+</body>
+</html>
